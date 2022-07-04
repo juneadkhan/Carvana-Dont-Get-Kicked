@@ -1,0 +1,246 @@
+## ----setup, include=FALSE-----------------------------------------------------------------------------------------
+knitr::opts_chunk$set(echo = TRUE)
+
+
+## ----cars---------------------------------------------------------------------------------------------------------
+# Important Libraries
+library('ggplot2') # visualization
+library('scales') # visualization
+library('grid') # visualisation
+library('dplyr') # data manipulation
+library('readr') # data input
+library('tibble') # data wrangling
+library('tidyr') # data wrangling
+library('stringr') # string manipulation
+library('forcats') # factor manipulation
+library(randomForest)
+library(ranger)
+library(caret)
+require(vip)
+library(pls)
+
+
+## ----pressure, echo=FALSE-----------------------------------------------------------------------------------------
+train <- read.csv("training_data.csv")
+test <- read.csv("test_data.csv")
+
+head(train)
+nrow(train) # Get number of rows in training dataset
+nrow(test) # Get number of rows in training dataset
+
+
+
+## -----------------------------------------------------------------------------------------------------------------
+# Clean Data Types for Train
+
+# Since VehYear is also in the dataset, the Purchase date is redundant.
+train$PurchDate <- NULL
+
+# Has many NULL values
+train$AUCGUART <- NULL
+train$PRIMEUNIT <- NULL
+
+# Buyer Number is irrelevant
+train$BYRNO <- NULL
+
+
+#summary(train$Transmission)
+# One value was "Manual instead of MANUAL" and had a few labelled "NULL"
+train$Transmission[grep("Manual", train$Transmission)] <- "MANUAL"
+train$Transmission[grep("NULL", train$Transmission)] <- NA
+train$Transmission <- factor(train$Transmission, levels = c("AUTO", "MANUAL"))
+
+# Wheel TypeID and Wheel Type should map to each other
+# TypeID -> Type
+# 0 -> NA
+# 1 -> Alloy
+# 2 -> Covers
+# 3 -> Special
+train$WheelTypeID[grep("NULL", train$WheelTypeID , ignore.case=TRUE)] <- 0
+train$WheelTypeID <- factor(train$WheelTypeID, levels=c(0,1,2,3))
+
+# Looking between the 2 variables, it looks like NULL Wheel Type is a Steel Wheel
+train$WheelType[grep("NULL", train$WheelType)] <- "Steel"
+summary(train$WheelType)
+
+
+# If a TopThreeAmericanName is NULL, it is actually other.
+train$TopThreeAmericanName[grep("NULL", train$TopThreeAmericanName , ignore.case=TRUE)] <- "OTHER"
+train$TopThreeAmericanName <- factor(train$TopThreeAmericanName, levels=c("CHRYSLER","FORD", "GM", "OTHER"))
+
+# If a Nationality is NULL it is Other
+train$Nationality[grep("NULL", train$TopThreeAmericanName , ignore.case=TRUE)] <- "OTHER"
+train$Nationality <- factor(train$Nationality, levels=c("AMERICAN","OTHER", "OTHER ASIAN", "TOP LINE ASIAN"))
+
+# Deal with Null Values
+train$Color[grep("NULL", train$Color , ignore.case=TRUE)] <- NA
+train$Size[grep("NULL", train$Size , ignore.case=TRUE)] <- NA
+train$Trim[grep("NULL", train$Trim , ignore.case=TRUE)] <- NA
+train$MMRCurrentAuctionAveragePrice[grep("NULL", train$MMRCurrentAuctionAveragePrice , ignore.case=TRUE)] <- NA
+train$MMRCurrentAuctionCleanPrice[grep("NULL", train$MMRCurrentAuctionCleanPrice , ignore.case=TRUE)] <- NA
+train$MMRCurrentRetailAveragePrice[grep("NULL", train$MMRCurrentRetailAveragePrice , ignore.case=TRUE)] <- NA
+train$MMRCurrentRetailCleanPrice[grep("NULL", train$MMRCurrentRetailCleanPrice , ignore.case=TRUE)] <- NA
+
+# Change MMR Prices to Numeric
+train$MMRAcquisitionAuctionAveragePrice <- as.numeric(train$MMRAcquisitionAuctionAveragePrice)
+train$MMRAcquisitionAuctionCleanPrice <- as.numeric(train$MMRAcquisitionAuctionCleanPrice)
+train$MMRAcquisitionRetailAveragePrice <- as.numeric(train$MMRAcquisitionRetailAveragePrice)
+train$MMRAcquisitonRetailCleanPrice <- as.numeric(train$MMRAcquisitonRetailCleanPrice)
+train$MMRCurrentAuctionAveragePrice <- as.numeric(train$MMRCurrentAuctionAveragePrice)
+train$MMRCurrentAuctionCleanPrice<- as.numeric(train$MMRCurrentAuctionCleanPrice)
+train$MMRCurrentRetailAveragePrice <- as.numeric(train$MMRCurrentRetailAveragePrice)
+train$MMRCurrentRetailCleanPrice <- as.numeric(train$MMRCurrentRetailCleanPrice)
+
+#Turn Chr variables into Factors
+train$Auction <- as.factor(train$Auction)
+train$Make <- as.factor(train$Make)
+train$Model <- as.factor(train$Model)
+train$Trim <- as.factor(train$Trim)
+train$SubModel <- as.factor(train$SubModel)
+train$Color <- as.factor(train$Color)
+train$Size <- as.factor(train$Size)
+train$VNST <- as.factor(train$VNST)
+
+head(train)
+
+
+## -----------------------------------------------------------------------------------------------------------------
+
+ggplot(train, aes(x=VehicleAge, fill = factor(IsBadBuy))) + geom_bar() + scale_fill_brewer(labels = c("No", "Yes")) + theme_light() + labs(x = "Vehicle Age (Years)", y = "Count", fill = "Is Lemon Car?") + ggtitle("Bar Chart showing distribution of Vehicle Age") + theme(text = element_text(family = "Times New Roman"), legend.position = c(.9, .8)) + scale_fill_grey()
+
+
+## -----------------------------------------------------------------------------------------------------------------
+ggplot(train, aes(y=Make, fill = factor(IsBadBuy))) + geom_bar() + scale_fill_brewer(labels = c("No", "Yes")) + theme_light() + labs(x = "Count", y = "Make", fill = "Is Lemon Car?") + ggtitle("Bar chart showing distribution of car makes in the dataset.") + theme(text = element_text(family = "Times New Roman"), legend.position = c(.9, .8)) + scale_fill_grey()
+
+## -----------------------------------------------------------------------------------------------------------------
+bad <- filter(train[, c("Nationality", "IsBadBuy")], IsBadBuy == TRUE) %>% group_by(Nationality) %>% summarise(BadBuys = n())
+good <- filter(train[, c("Nationality", "IsBadBuy")], IsBadBuy == FALSE) %>% group_by(Nationality) %>% summarise(GoodBuys = n())
+
+combined <- bad %>% left_join(good, by = 'Nationality')
+combined <- combined %>% mutate(PercentBadBuys = round((BadBuys/(GoodBuys+BadBuys)), 2))
+
+head(combined)
+
+ggplot(combined, aes(x=reorder(Nationality, -PercentBadBuys), y = PercentBadBuys, fill = Nationality)) + geom_col()  + theme_light() + labs(x = "Brand Nationality", y = "Percentage of Lemon Cars (%)", fill = "Is Lemon Car?") + ggtitle("Bar Chart showing which nationalities have the highest % of lemon cars.") + scale_y_continuous(labels = percent) + scale_fill_grey() + theme(legend.position = "none") + theme(text = element_text(family = "Times New Roman"))
+
+## -----------------------------------------------------------------------------------------------------------------
+bad <- filter(train[, c("Make", "IsBadBuy", "Nationality")], IsBadBuy == TRUE) %>% group_by(Make, Nationality) %>% summarise(BadBuys = n())
+good <- filter(train[, c("Make", "IsBadBuy")], IsBadBuy == FALSE) %>% group_by(Make) %>% summarise(GoodBuys = n())
+
+head(bad)
+
+combined <- bad %>% left_join(good, by = 'Make')
+combined <- combined %>% mutate(PercentBadBuys = round((BadBuys/(GoodBuys+BadBuys)), 2))
+
+head(combined)
+
+ggplot(combined, aes(y=reorder(Make, -PercentBadBuys), fill = Nationality, x = PercentBadBuys)) + geom_col() + theme_light() + labs(x = "Percentage of Lemon Cars (%)", y = "Vehicle Make", fill = "Nationality") + ggtitle("Bar Chart showing which car nationalitys have the highest % of lemon cars.") + scale_fill_grey() + theme(text = element_text(family = "Times New Roman")) + scale_x_continuous(labels = percent)
+
+
+## -----------------------------------------------------------------------------------------------------------------
+# Use Model to create feature for Displacement
+train$displacement <- "V4"
+train$displacement[grep("V6", train$Model , ignore.case=TRUE)] <- "V6"
+train$displacement[grep("V8", train$Model , ignore.case=TRUE)] <- "V8"
+
+# Use Model to create feature for PowerTrain
+train$PowerTrain <- "2WD"
+train$PowerTrain[grep("4WD", train$Model , ignore.case=TRUE)] <- "4WD"
+train$PowerTrain[grep("FWD", train$Model , ignore.case=TRUE)] <- "4WD"
+train$PowerTrain[grep("AWD", train$Model , ignore.case=TRUE)] <- "AWD"
+
+# Add Price Difference Feature
+train <- train %>% mutate(price_difference = (MMRAcquisitionAuctionAveragePrice - VehBCost))
+
+# Add Miles Per Year (Weighted)
+train <- train %>% mutate(miles_per_year = (VehOdo/(VehicleAge+(1*10000))))
+
+summary(train$miles_per_year)
+
+
+## -----------------------------------------------------------------------------------------------------------------
+set.seed(100)
+train.index = sample(nrow(train), nrow(train)/4*3)
+train.train = na.omit(train[train.index,])
+train.test = na.omit(train[-train.index,])
+
+
+## -----------------------------------------------------------------------------------------------------------------
+set.seed(100)
+# Random Forest was too slow so used ranger
+rfmodel <- ranger(factor(IsBadBuy) ~. , data = na.omit(train.train), num.trees = 500, importance = "permutation")
+rfmodel2 <- ranger(factor(IsBadBuy) ~. , data = na.omit(train.train), num.trees = 500, importance = "impurity")
+
+
+## -----------------------------------------------------------------------------------------------------------------
+v1 <- vip(rfmodel, num_features = 33)
+v2 <- vip(rfmodel2, num_features = 33)
+
+grid.arrange(v1, v2, ncol=2)
+
+
+## -----------------------------------------------------------------------------------------------------------------
+model_glm = glm(IsBadBuy ~ MMRAcquisitionAuctionAveragePrice + MMRAcquisitionAuctionCleanPrice + MMRCurrentAuctionCleanPrice + miles_per_year + VehOdo + MMRCurrentRetailCleanPrice + MMRAcquisitionRetailAveragePrice + MMRAcquisitonRetailCleanPrice + price_difference + VehBCost + VehOdo + WheelType + WheelTypeID + VNZIP1, data = na.omit(train.train), family = "binomial")
+summary(model_glm)
+
+model_glm_pred_tr <- ifelse(predict(model_glm, newdata = train.train, type = "response") > 0.5,1,0)
+model_glm_pred_tst <- ifelse(predict(model_glm, newdata = train.test, type = "response") > 0.5,1,0)
+
+# Training Results
+confusionMatrix(factor(model_glm_pred_tr),factor(train.train$IsBadBuy), positive = '1')
+
+# Test Results
+confusionMatrix(factor(model_glm_pred_tst),factor(train.test$IsBadBuy), positive = '1')
+
+library(pROC)
+
+roc(train.test$IsBadBuy, predict(model_glm, newdata = train.test, type = "response"))
+
+plot(roc(train.test$IsBadBuy, predict(model_glm, newdata = train.test, type = "response")),legacy.axes = TRUE)
+
+
+
+## -----------------------------------------------------------------------------------------------------------------
+#rfmodel_simp <- ranger(factor(IsBadBuy) ~ MMRAcquisitionAuctionAveragePrice + MMRAcquisitionAuctionCleanPrice + MMRCurrentAuctionCleanPrice + miles_per_year + VehOdo + MMRCurrentRetailCleanPrice + MMRAcquisitionRetailAveragePrice + MMRAcquisitonRetailCleanPrice + price_difference + VehBCost + VehOdo + WheelType + WheelTypeID + VNZIP1, data = na.omit(train.train), num.trees = 1000, mtry = 5)
+
+# Training Results
+#confusionMatrix(predict(rfmodel_simp, train.train)$predictions, factor(train.train$IsBadBuy),positive='1')
+
+# Test Results
+#confusionMatrix(predict(rfmodel_simp, train.test)$predictions, factor(train.test$IsBadBuy),positive='1')
+
+#length(train.test$IsBadBuy)
+#length(predict(rfmodel_simp, train.test, type = "response")$predictions[,1])
+
+#plot(roc(train.test$IsBadBuy, factor(predict(rfmodel_simp, train.test, type = "response")$predictions[,1],ordered=TRUE)),legacy.axes = TRUE)
+
+#roc(train.test$IsBadBuy, factor(predict(rfmodel_simp, train.test, type = "response")$predictions[,1],ordered=TRUE))
+
+
+
+## -----------------------------------------------------------------------------------------------------------------
+library(gbm)
+boost <- gbm(IsBadBuy ~ MMRAcquisitionAuctionAveragePrice + MMRAcquisitionAuctionCleanPrice + MMRCurrentAuctionCleanPrice + miles_per_year + VehOdo + MMRCurrentRetailCleanPrice + MMRAcquisitionRetailAveragePrice + MMRAcquisitonRetailCleanPrice + price_difference + VehBCost + VehOdo + WheelTypeID + VNZIP1 + WarrantyCost + SubModel + Color + Trim + VehicleAge + VehYear + Size + Auction, data = train.train, distribution = "bernoulli", n.trees = 500, cv.folds = 5, interaction.depth = 6, shrinkage = 0.01, n.minobsinnode = 3)
+
+#length(ifelse(predict(boost, train.test, n.trees = 500, type = 'response') > 0.5, 1, 0))
+#length(factor(train.test$IsBadBuy))
+
+# Training Results
+confusionMatrix(factor(ifelse(predict(boost, train.train, n.trees = 500, type = 'response') > 0.5, 1, 0)),factor(train.train$IsBadBuy), positive='1')
+
+min_MSE <- which.min(boost$cv.error)
+# plot loss function as a result of n trees added to the ensemble
+gbm.perf(boost, method = "cv")
+
+# Test Results
+confusionMatrix(factor(ifelse(predict(boost, train.test, n.trees = 500, type = 'response') > 0.5, 1, 0)),factor(train.test$IsBadBuy), positive='1')
+
+plot(roc(train.test$IsBadBuy, predict(boost, train.test, n.trees = 500, type = 'response')),legacy.axes = TRUE)
+
+library(pROC)
+#roc(train.test$IsBadBuy, predict(boost, train.test, n.trees = 500, type = 'response'))
+boost.train.pred = ifelse(predict(boost, test, n.trees = 500, type = 'response') > 0.5, 1, 0)
+
+out.df <- data.frame(RefId= test$RefId, IsBadBuy= boost.train.pred)
+write.csv(out.df,"car_boost4.csv", row.names = FALSE)
+
